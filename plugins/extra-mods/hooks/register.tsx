@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, RenderInput, Timer } from 'claude-code'
 
 import type { Effort, Panel, RateLimit, StatusSnapshot, ThemeEntry, ZenColors, ZenStep, ZenTask, ZenTheme } from '../types'
+import { groupMcpTools, mcpLabel } from './lib/mcps'
 import { EFFORTS, type Mode, MODELS, MODES, modeLabel, modelFamily } from './lib/modes'
 import {
   backgroundPill,
@@ -74,6 +75,7 @@ const statusOn = atom({ plugin: 'extra-mods', key: 'statusOn' } as const, false)
 const status = atom({ plugin: 'extra-mods', key: 'status' } as const, null)
 const lastResponseAt = atom({ plugin: 'extra-mods', key: 'lastResponseAt' } as const, null)
 const statusClock = atom({ plugin: 'extra-mods', key: 'statusClock' } as const, 0)
+const mcps = atom({ plugin: 'extra-mods', key: 'mcps' } as const, null)
 
 // The menu's pane: a sidebar in the fullscreen layout, a block above the prompt otherwise.
 // Claude's progress tool, as the model calls it.
@@ -548,6 +550,21 @@ async function refreshStatus($: EngineInterface) {
   await update($, status, () => snapshot)
 }
 
+// MCP: the servers whose tools the context carries, counted locally (no API call).
+async function refreshMcps($: EngineInterface) {
+  const usage = await $.session.usage({ breakdown: 'summary' })
+  const tools = usage.context.breakdown?.mcpTools
+  if (tools !== undefined) await update($, mcps, () => groupMcpTools(tools))
+}
+
+// MCP: the corner's indicator opens the menu on its page, or closes it there.
+async function toggleMcps($: EngineInterface) {
+  void refreshMcps($).catch(() => {})
+  const panel = await read($, menu)
+  if (panel === null || panel === 'mcps') await toggleMenu($, 'mcps')
+  else await goTo($, 'mcps')
+}
+
 type SavedStatusLine = { statusLine: unknown }
 
 // On: the mod draws the status line, so Claude Code's own statusLine command is
@@ -832,6 +849,37 @@ async function drawPane($: EngineInterface, e: RenderInput<'Pane'>, panel: Panel
     ])
   }
 
+  if (panel === 'mcps') {
+    const servers = await read($, mcps)
+    return page('MCP servers', [
+      <Text key="mcps-about" dimColor>
+        Servers whose tools this session loaded.
+      </Text>,
+      heading(`Loaded (${servers?.length ?? '…'})`),
+      servers === null && (
+        <Text key="mcps-wait" dimColor>
+          Reading the session…
+        </Text>
+      ),
+      servers?.length === 0 && (
+        <Text key="mcps-none" dimColor>
+          None.
+        </Text>
+      ),
+      ...(servers ?? []).map(s => (
+        <Box key={`mcp-${s.name}`} justifyContent="space-between" gap={1}>
+          <Text wrap="truncate">● {s.name}</Text>
+          <Text dimColor>
+            {s.tools} {s.tools === 1 ? 'tool' : 'tools'} · {fmtTokens(s.tokens)}
+          </Text>
+        </Box>
+      )),
+      <Box key="mcps-refresh" marginTop={1}>
+        <Button key="mcps-refresh-button" plain dimColor label="↻ Refresh" onPress={() => refreshMcps($)} />
+      </Box>,
+    ])
+  }
+
   if (panel === 'status') {
     const isOn = await read($, statusOn)
     return page('Status line', [
@@ -951,7 +999,14 @@ async function drawPromptHint($: EngineInterface, e: RenderInput<'PromptHint'>) 
   const { Box, Text, Button } = $.ui.resolve(e)
   const isOpen = (await read($, menu)) !== null
   const label = `◆ ${MENU_NAME} ${isOpen ? '▼' : '▲'}`
-  const button = <Button key="tools-toggle" plain label={label} onPress={() => toggleMenu($)} />
+  const mcpText = mcpLabel(await read($, mcps))
+  // The MCP indicator rides left of the extra-mods button, both kept together.
+  const button = (
+    <Box gap={2} flexShrink={0}>
+      <Button key="mcps-toggle" plain dimColor label={mcpText} onPress={() => toggleMcps($)} />
+      <Button key="tools-toggle" plain label={label} onPress={() => toggleMenu($)} />
+    </Box>
+  )
   const snapshot = (await read($, statusOn)) ? await read($, status) : null
 
   // The engine keeps its mode label (⏵⏵ auto mode on ·) in a column of its own
@@ -993,7 +1048,7 @@ async function drawPromptHint($: EngineInterface, e: RenderInput<'PromptHint'>) 
   // One row beside the engine's mode label (about MODE_LABEL_COLUMNS wide):
   // the most detailed level that leaves room for the button; past the least
   // detailed one, the model and folder go too.
-  const room = columns - MODE_LABEL_COLUMNS - label.length - 4
+  const room = columns - MODE_LABEL_COLUMNS - label.length - mcpText.length - 6
   const fits = (d: Detail, withHead: boolean) =>
     statsWidth(`${ctxPercent}%${ctxTokens}`, limits, cacheText, d) + (withHead ? head.length + 5 : 0) <= room
   const showHead = fits(2, true)
@@ -1123,6 +1178,9 @@ export const register: Register = on => {
       await trackModel($, await $.session.model())
     } catch {}
     await refreshPaneBg($)
+    // MCP servers keep connecting after the start, so read them again shortly.
+    void refreshMcps($).catch(() => {})
+    $.clock.after(10_000, () => void refreshMcps($).catch(() => {}))
     statusTicker?.cancel()
     statusTicker = $.clock.every(15_000, () => {
       void update($, statusClock, () => Date.now())
@@ -1133,7 +1191,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'tools',
       description: 'Open the extra-mods menu: Zen mode, themes, mode and status line',
-      argumentHint: '[zen|themes|mode|debug]',
+      argumentHint: '[zen|themes|mode|mcps|debug]',
       immediate: true,
     })
     return started
@@ -1145,7 +1203,8 @@ export const register: Register = on => {
       const rows = await $.config.list()
       return { text: rows.map(r => `${r.key} (${r.kind}) = ${JSON.stringify(r.value)}`).join('\n') }
     }
-    const panel: Panel = arg === 'zen' || arg === 'themes' || arg === 'mode' ? arg : 'main'
+    const panel: Panel = arg === 'zen' || arg === 'themes' || arg === 'mode' || arg === 'mcps' ? arg : 'main'
+    if (panel === 'mcps') void refreshMcps($).catch(() => {})
     if ((await read($, menu)) !== null) await goTo($, panel)
     else await toggleMenu($, panel)
     return { text: 'extra-mods is open.' }
@@ -1300,6 +1359,7 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     stopTicker()
+    void refreshMcps($).catch(() => {})
     const current = await read($, task)
     if (current !== null && current.doneAt === null) {
       const doneAt = await $.clock.now()

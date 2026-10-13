@@ -1,4 +1,4 @@
-export type Panel = 'main' | 'zen' | 'themes' | 'mode' | 'status'
+export type Panel = 'main' | 'zen' | 'themes' | 'mode' | 'status' | 'mcps'
 
 export type ZenTheme = 'blue' | 'dark' | 'light' | 'green' | 'rainbow' | 'custom'
 
@@ -32,6 +32,9 @@ export type StatusSnapshot = {
   limits: RateLimit[]
 }
 
+// One MCP server loaded in the session: its tools in the context and their tokens.
+export type McpServer = { name: string; tools: number; tokens: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'extra-mods': {
@@ -59,6 +62,7 @@ declare module 'claude-code' {
       sessionModel: string | null
       paneBg: string | null
       defaultModeChosen: boolean
+      mcps: McpServer[] | null
     }
   }
 }
