@@ -232,6 +232,31 @@ describe('toolbox', () => {
     }
   })
 
+  test('the MCP indicator counts the loaded servers and lists them in the pane', async ($, on) => {
+    engineDraws(on)
+    const mcpTools = [
+      { name: 'mcp__graph__search', serverName: 'graph', tokens: 400, isLoaded: false },
+      { name: 'mcp__graph__trace', serverName: 'graph', tokens: 600, isLoaded: false },
+      { name: 'mcp__notion__fetch', serverName: 'notion', tokens: 1500, isLoaded: true },
+    ]
+    on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 200_000, breakdown: { mcpTools } } } }) as never)
+    for (const surface of SURFACES) {
+      const corner = await $.ui.mount({ plugin: PLUGIN, surface, ...hint })
+      const menu = await $.ui.mount({ plugin: PLUGIN, surface, ...pane })
+
+      await corner.press({ key: 'mcps-toggle' })
+      expect((await corner.find({ key: 'mcps-toggle' }))?.text).toMatch(/^MCP 2$/)
+      expect(await menu.find({ key: 'mcp-graph' })).toBeDefined()
+      expect((await menu.find({ key: 'mcp-graph' }))?.text).toMatch(/2 tools · 1k/)
+      expect((await menu.find({ key: 'mcp-notion' }))?.text).toMatch(/1 tool · 2k/)
+
+      await corner.press({ key: 'mcps-toggle' })
+      expect(await menu.find({ key: 'mcp-graph' })).toBeUndefined()
+      await corner.unmount()
+      await menu.unmount()
+    }
+  })
+
   test('Zen mode and its band color are set from the menu', async ($, on) => {
     engineDraws(on)
     const surface = 'terminal'
